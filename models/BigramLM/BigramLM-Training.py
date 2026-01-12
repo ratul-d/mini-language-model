@@ -88,20 +88,22 @@ print(logits.shape) --> torch.Size([256, 65])
 
 
 # FUNCTION TO EVALUATE OVERALL TRAIN-VAL LOSS
-""" 
-    WARNING: This passes entire dataset through model at once.
-    Will cause memory issues with large datasets.
-    Should be refactored to use batched evaluation.
-"""
 @torch.no_grad()
 def evaluate_full_dataset(split):
     data = train_data if split == 'train' else val_data
-
     m.eval()
-    logits, loss = m(data[:-1].unsqueeze(0), data[1:].unsqueeze(0)) # forward Pass
-    m.train()
 
-    return loss.item()
+    losses = []
+    for i in range(0, len(data) - block_size,block_size):
+        x = data[i: i+block_size].unsqueeze(0)
+        y = data[i+1: i+block_size+1].unsqueeze(0)
+
+        _, loss = m(x,y)
+
+        losses.append(loss.item())
+
+    m.train()
+    return sum(losses)/len(losses)
 
 
 # TRAINING
@@ -125,12 +127,6 @@ for steps in range(10001):
         print(f"Train: {final_train_loss:.4f}",end=' ')
         print(f"Val: {final_val_loss:.4f}")
 
-
-# OVERALL EVALUATION
-final_train_loss = evaluate_full_dataset('train')
-final_val_loss = evaluate_full_dataset('val')
-print(f"\nFinal training loss: {final_train_loss:.4f}")
-print(f"Final validation loss: {final_val_loss:.4f}")
 
 # SAVE THE MODEL
 torch.save({
