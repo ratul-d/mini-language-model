@@ -2,6 +2,8 @@ import torch
 import torch.nn as nn
 from torch.nn import functional as F
 
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+print("Using device:", device)
 
 # LOAD DATASET
 with open("models/input.txt", "r", encoding="utf-8") as f:
@@ -20,7 +22,7 @@ encode = lambda s: [stoi[c] for c in s]
 decode = lambda l: ''.join([itos[i] for i in l])
 
 # ENCODE COMPLETE DATASET
-data = torch.tensor(encode(text), dtype=torch.long) # data.shape --> torch.Size([1115394])
+data = torch.tensor(encode(text), dtype=torch.long, device=device) # data.shape --> torch.Size([1115394])
 
 # TRAIN-TEST SPLIT
 n = int(0.9*len(data))
@@ -28,12 +30,12 @@ train_data = data[:n] # train_data.shape --> torch.Size([1003854])
 val_data = data[n:] # val_data.shape --> torch.Size([111540])
 
 
-# DATA BATCHES FUNC
+# DATA BATCHES FUNCTION
 def get_batch(split):
     data = train_data if split=="train" else val_data
-    ix = torch.randint(len(data)-block_size, (batch_size,))
-    x = torch.stack([data[i:i+block_size] for i in ix])
-    y = torch.stack([data[i+1:i+block_size+1] for i in ix])
+    ix = torch.randint(len(data)-block_size, (batch_size,), device=device)
+    x = torch.stack([data[i:i+block_size] for i in ix]).to(device)
+    y = torch.stack([data[i+1:i+block_size+1] for i in ix]).to(device)
     return x,y
 """
 get_batch USAGE:
@@ -43,11 +45,11 @@ get_batch USAGE:
 """
 
 
-
 # HYPERPARAMETERS
 batch_size = 32
 block_size = 8
 n_embd = 32
+dropout = 0.2
 
 torch.manual_seed(1337) # For reproducibility across runs
 
@@ -61,6 +63,7 @@ class Head(nn.Module):
         self.query = nn.Linear(n_embd, head_size, bias=False)
         self.value = nn.Linear(n_embd, head_size, bias=False)
         self.register_buffer('tril',torch.tril(torch.ones(block_size,block_size)))
+        self.dropout = nn.Dropout(dropout)
 
     def forward(self, x):
         B,T,C = x.shape
@@ -70,6 +73,7 @@ class Head(nn.Module):
         wei = q @ k.transpose(-2,-1) * C**-0.5
         wei = wei.masked_fill(self.tril[:T,:T] == 0, float('-inf'))
         wei = F.softmax(wei, dim=-1)
+        wei = self.dropout(wei)
 
         v = self.value(x)
         out = wei @ v
@@ -80,17 +84,24 @@ class MultiHeadAttention(nn.Module):
     def __init__(self, num_heads, head_size):
         super().__init__()
         self.heads = nn.ModuleList([Head(head_size) for _ in range(num_heads)])
+        self.proj = nn.Linear(n_embd, n_embd)
+        self.dropout = nn.Dropout(dropout)
 
     def forward(self, x):
-        return torch.cat([h(x) for h in self.heads], dim=-1)
+        out = torch.cat([h(x) for h in self.heads], dim=-1)
+        out = self.proj(out)
+        out = self.dropout(out)
+        return out
 
 # FEED FORWARD
 class FeedForward(nn.Module):
     def __init__(self, n_embd):
         super().__init__()
         self.net = nn.Sequential(
-            nn.Linear(n_embd, n_embd),
-            nn.ReLU()
+            nn.Linear(n_embd, 4 * n_embd),
+            nn.ReLU(),
+            nn.Linear(4 * n_embd, n_embd),
+            nn.Dropout(dropout)
         )
 
     def forward(self, x):
@@ -101,17 +112,18 @@ class Block(nn.Module):
     def __init__(self, n_embd, n_head):
         super().__init__()
         head_size = n_embd // n_head
+        self.ln1 = nn.LayerNorm(n_embd)
         self.sa = MultiHeadAttention(n_head, head_size)
+        self.ln2 = nn.LayerNorm(n_embd)
         self.ffwd = FeedForward(n_embd)
 
     def forward(self, x):
-        x = self.sa(x)
-        x = self.ffwd(x)
+        x = x + self.sa(self.ln1(x)) # residual connections
+        x = x + self.ffwd(self.ln2(x)) # residual connections
         return x
 
-
 # LANGUAGE MODEL
-class BigramLangaugeModel(nn.Module):
+class LanguageModel(nn.Module):
     def __init__(self):
         super().__init__()
         self.token_embedding_table = nn.Embedding(vocab_size,n_embd) #(65,32)
@@ -120,6 +132,7 @@ class BigramLangaugeModel(nn.Module):
             Block(n_embd,n_head=4),
             Block(n_embd,n_head=4),
             Block(n_embd,n_head=4),
+            nn.LayerNorm(n_embd),
         )
         self.lm_head = nn.Linear(n_embd,vocab_size) #(32,65)
 
@@ -127,7 +140,7 @@ class BigramLangaugeModel(nn.Module):
         """
         What is happening in this forward pass:
 
-        Assume Input (idx): (32, 8)
+        Assume Input (idx): (batch_size, block_size) -> (32, 8)
             32 batches, each with 8 token indices
 
         Token Embedding:
@@ -145,30 +158,51 @@ class BigramLangaugeModel(nn.Module):
             Position embeddings are broadcasted and added to token embeddings
             Each token now has both "what it is" and "where it is" information
 
-        Transformer Block * 4:
-            Self-attention Head * 4:
+        Transformer Block(x3):
+            Each block has:
 
-            Feed Forward:
+            #LayerNorm
 
+            a) Multi-Head Self-Attention
+                • Queries, Keys, Values computed from x
+                • Causal mask prevents attending to future tokens
+                • 4 attention heads run in parallel
+                    Linear(n_embd → n_embd)
+                    Dropout
+
+            b) Residual connection
+                x = x + self_attention_output
+
+            #LayerNorm
+
+            c) Feed-Forward Network
+                Linear(n_embd → 4*n_embd)
+                ReLU
+                Linear(4*n_embd → n_embd)
+                Dropout
+
+            d) Residual connection
+                x = x + feed_forward_output
+
+        #LayerNorm
 
         Language Model Head:
             (32, 8, 32) -> lm_head -> (32, 8, 65)
-            Batched matrix multiplication: 32 times of (8, 32) @ (32, 65) = (8, 65)
-            Projects each embedding to vocabulary size (65 logits per token)
+            Projects each token embedding to vocabulary size (65 logits per token)
             Shape: (batch_size, sequence_length, vocab_size)
 
         Summary:
             (32, 8) --token_emb--> (32, 8, 32)
                     --pos_emb----> (8, 32)
-                    --token_emb+pos_emb--------> (32, 8, 32)
-                    --sa_head----> (32, 8, 32)
-                    --linear-----> (32, 8, 65)
+                    --token_emb+pos_emb----> (32, 8, 32)
+                    --Transformer Block(x3)----> (32, 8, 32)
+                    --lm_head-----> (32, 8, 65)
         """
 
         B,T = idx.shape
 
         tok_embd = self.token_embedding_table(idx) # output.shape --> (B,T,n_embd)
-        pos_embd = self.position_embedding_table(torch.arange(T)) # output.shape --> (T,n_embd)
+        pos_embd = self.position_embedding_table(torch.arange(T, device=idx.device)) # output.shape --> (T,n_embd)
         x = tok_embd + pos_embd # output.shape --> (B,T,n_embd)
         x = self.blocks(x) # output.shape --> (B,T,n_embd)
         logits = self.lm_head(x) # output.shape --> (B,T,vocab_size)
@@ -196,7 +230,7 @@ class BigramLangaugeModel(nn.Module):
 
 
 # MODEL
-m = BigramLangaugeModel()
+m = LanguageModel().to(device)
 """
 logits, loss = m(xb, yb)
 print(logits.shape) --> torch.Size([256, 65])
@@ -205,21 +239,20 @@ print(logits.shape) --> torch.Size([256, 65])
 
 # FUNCTION TO EVALUATE OVERALL TRAIN-VAL LOSS
 @torch.no_grad()
-def evaluate_full_dataset(split):
-    data = train_data if split == 'train' else val_data
+def evaluate():
     m.eval()
 
-    losses = []
-    for i in range(0, len(data) - block_size,block_size):
-        x = data[i: i+block_size].unsqueeze(0)
-        y = data[i+1: i+block_size+1].unsqueeze(0)
-
-        _, loss = m(x,y)
-
-        losses.append(loss.item())
+    losses = {}
+    for split in ['train', 'val']:
+        split_losses = []
+        for _ in range(50):  # only 50 batches
+            xb, yb = get_batch(split)
+            _, loss = m(xb, yb)
+            split_losses.append(loss.item())
+        losses[split] = sum(split_losses) / len(split_losses)
 
     m.train()
-    return sum(losses)/len(losses)
+    return losses
 
 
 # TRAINING
@@ -237,17 +270,15 @@ for steps in range(100):
         print(f"Step {steps}", end=' | ')
         print(f"Batch Loss: {loss.item():.4f}",end=' | ')
 
-        final_train_loss = evaluate_full_dataset('train')
-        final_val_loss = evaluate_full_dataset('val')
-        print(f"OVERALL LOSS:", end='\t')
-        print(f"Train: {final_train_loss:.4f}",end=' ')
-        print(f"Val: {final_val_loss:.4f}")
+        losses = evaluate()
+        print(f"Train: {losses['train']:.4f} | Val: {losses['val']:.4f}")
 
 # SAVE THE MODEL
 torch.save({
     'model_state_dict': m.state_dict(),
     'vocab_size': vocab_size,
     'block_size': block_size,
+    'dropout': dropout,
     'n_embd': n_embd,
     'stoi': stoi,
     'itos': itos
