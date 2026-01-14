@@ -165,14 +165,18 @@ class LanguageModel(nn.Module):
 
         return logits, loss
 
-    def generate(self,idx,max_new_tokens):
+    def generate_stream(self,idx,max_new_tokens, decode_fn):
         for _ in range(max_new_tokens):
             idx_cond = idx[:,-block_size:]
             logits, loss = self(idx_cond)
             logits = logits[:, -1, :]
             probs = F.softmax(logits, dim=1)
+
             idx_next = torch.multinomial(probs, num_samples=1)
             idx = torch.cat((idx,idx_next), dim=1)
+
+            token = decode_fn(idx_next[0].tolist())
+            print(token, end="", flush=True)
         return idx
 
 
@@ -207,4 +211,4 @@ print("Model Parameters:",sum(p.numel() for p in m.parameters()))
 
 # GENERATE
 idx = torch.zeros((1,1), dtype=torch.long, device=device) # just a tensor having a single "0" to start the generation
-print(decode(m.generate(idx,max_new_tokens=1000)[0].tolist()))
+m.generate_stream(idx,max_new_tokens=3000, decode_fn=decode)
