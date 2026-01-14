@@ -4,7 +4,7 @@ from torch.nn import functional as F
 
 
 # LOAD DATASET
-with open("models/input.txt", "r", encoding="utf-8") as f:
+with open("Dataset/input.txt", "r", encoding="utf-8") as f:
     text = f.read()
 
 # GET ALL UNIQUE CHARACTERS

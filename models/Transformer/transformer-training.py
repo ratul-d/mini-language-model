@@ -2,6 +2,56 @@ import torch
 import torch.nn as nn
 from torch.nn import functional as F
 
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+print("Using device:", device)
+
+# LOAD DATASET
+with open("Dataset/input.txt", "r", encoding="utf-8") as f:
+    text = f.read()
+
+# GET ALL UNIQUE CHARACTERS
+chars = sorted(list(set(text)))
+vocab_size = len(chars)
+# print("Unique Characters: ",''.join(chars))
+# print("Vocab_Size: ",vocab_size) --> 65
+
+# STRING-TO-INTEGER AND REVERSE MAPPING
+stoi = {ch:i for i,ch in enumerate(chars)}
+itos = {i:ch for i,ch in enumerate(chars)}
+encode = lambda s: [stoi[c] for c in s]
+decode = lambda l: ''.join([itos[i] for i in l])
+
+# ENCODE COMPLETE DATASET
+data = torch.tensor(encode(text), dtype=torch.long, device=device) # data.shape --> torch.Size([1115394])
+
+# TRAIN-TEST SPLIT
+n = int(0.9*len(data))
+train_data = data[:n] # train_data.shape --> torch.Size([1003854])
+val_data = data[n:] # val_data.shape --> torch.Size([111540])
+
+
+# DATA BATCHES FUNCTION
+def get_batch(split):
+    data = train_data if split=="train" else val_data
+    ix = torch.randint(len(data)-block_size, (batch_size,), device=device)
+    x = torch.stack([data[i:i+block_size] for i in ix]).to(device)
+    y = torch.stack([data[i+1:i+block_size+1] for i in ix]).to(device)
+    return x,y
+"""
+get_batch USAGE:
+    xb,yb = get_batch("train")
+    xb.shape --> [32,8] 32 separate occasions/batches of 8 continuous characters
+    yb.shape --> [32,8] predicted next character for each character in previous matrix
+"""
+
+
+# HYPERPARAMETERS
+batch_size = 32
+block_size = 8
+n_embd = 32
+dropout = 0.2
+
+torch.manual_seed(1337) # For reproducibility across runs
 
 # SELF-ATTENTION
 class Head(nn.Module):
@@ -179,24 +229,58 @@ class LanguageModel(nn.Module):
         return idx
 
 
-checkpoint = torch.load("models/Self-Attention/self-attention.pth")
-vocab_size = checkpoint["vocab_size"]
-block_size = checkpoint["block_size"]
-dropout = checkpoint["dropout"]
-n_embd = checkpoint["n_embd"]
-stoi = checkpoint["stoi"]
-itos = checkpoint["itos"]
+# MODEL
+m = LanguageModel().to(device)
+"""
+logits, loss = m(xb, yb)
+print(logits.shape) --> torch.Size([256, 65])
+"""
 
 
-m = LanguageModel()
-m.load_state_dict(checkpoint["model_state_dict"])
-m.eval()
+# FUNCTION TO EVALUATE OVERALL TRAIN-VAL LOSS
+@torch.no_grad()
+def evaluate():
+    m.eval()
+
+    losses = {}
+    for split in ['train', 'val']:
+        split_losses = []
+        for _ in range(50):  # only 50 batches
+            xb, yb = get_batch(split)
+            _, loss = m(xb, yb)
+            split_losses.append(loss.item())
+        losses[split] = sum(split_losses) / len(split_losses)
+
+    m.train()
+    return losses
 
 
-encode = lambda s: [stoi[c] for c in s]
-decode = lambda l: ''.join([itos[i] for i in l])
+# TRAINING
+optimizer = torch.optim.AdamW(m.parameters(), lr=1e-3)
 
+for steps in range(20000):
+    xb, yb  = get_batch('train')            # data batch
 
-# GENERATE
-idx = torch.zeros((1,1), dtype=torch.long) # just a tensor having a single "0" to start the generation
-print(decode(m.generate(idx,max_new_tokens=1000)[0].tolist()))
+    logits, loss = m(xb,yb)                 # forward pass & loss calculation
+    optimizer.zero_grad(set_to_none=True)   # zero_grad
+    loss.backward()                         # backward pass
+    optimizer.step()                        # optimize
+
+    if steps % 500 == 0:
+        print(f"Step {steps}", end=' | ')
+        print(f"Batch Loss: {loss.item():.4f}",end=' | ')
+
+        losses = evaluate()
+        print(f"Train: {losses['train']:.4f} | Val: {losses['val']:.4f}")
+
+# SAVE THE MODEL
+torch.save({
+    'model_state_dict': m.state_dict(),
+    'vocab_size': vocab_size,
+    'block_size': block_size,
+    'dropout': dropout,
+    'n_embd': n_embd,
+    'stoi': stoi,
+    'itos': itos
+}, 'models/Transformer/transformer.pth')
+print("MODEL SAVED.")
