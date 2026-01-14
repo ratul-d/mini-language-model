@@ -9,6 +9,7 @@ class Head(nn.Module):
 
     def __init__(self,head_size):
         super().__init__()
+        self.head_size = head_size
         self.key = nn.Linear(n_embd, head_size, bias=False)
         self.query = nn.Linear(n_embd, head_size, bias=False)
         self.value = nn.Linear(n_embd, head_size, bias=False)
@@ -20,7 +21,7 @@ class Head(nn.Module):
         k = self.key(x)
         q = self.query(x)
 
-        wei = q @ k.transpose(-2,-1) * C**-0.5
+        wei = q @ k.transpose(-2,-1) * self.head_size **-0.5
         wei = wei.masked_fill(self.tril[:T,:T] == 0, float('-inf'))
         wei = F.softmax(wei, dim=-1)
         wei = self.dropout(wei)
@@ -76,39 +77,35 @@ class Block(nn.Module):
 class LanguageModel(nn.Module):
     def __init__(self):
         super().__init__()
-        self.token_embedding_table = nn.Embedding(vocab_size,n_embd) #(65,32)
-        self.position_embedding_table = nn.Embedding(block_size,n_embd) #(8,32)
-        self.blocks = nn.Sequential(
-            Block(n_embd,n_head=4),
-            Block(n_embd,n_head=4),
-            Block(n_embd,n_head=4),
-            nn.LayerNorm(n_embd),
-        )
-        self.lm_head = nn.Linear(n_embd,vocab_size) #(32,65)
+        self.token_embedding_table = nn.Embedding(vocab_size,n_embd)
+        self.position_embedding_table = nn.Embedding(block_size,n_embd)
+        self.blocks = nn.Sequential(*[Block(n_embd, n_head=n_head) for _ in range(n_layer)])
+        self.ln_f = nn.LayerNorm(n_embd)
+        self.lm_head = nn.Linear(n_embd,vocab_size)
 
     def forward(self, idx, targets=None):
         """
         What is happening in this forward pass:
 
-        Assume Input (idx): (batch_size, block_size) -> (32, 8)
-            32 batches, each with 8 token indices
+        Assume Input (idx): (batch_size, block_size) -> (64, 256)
+            64 batches, each with 256 token indices
 
         Token Embedding:
-            idx -> token_embedding_table -> (32, 8, 32)
+            idx -> token_embedding_table -> (64, 256, 384)
             Each token index is mapped to a 32-dimensional embedding
             Shape: (batch_size, sequence_length, embedding_dim)
 
         Position Embedding:
-            torch.arange(T) -> position_embedding_table -> (8, 32)
-            Each position (0-7) is mapped to a 32-dimensional embedding
+            torch.arange(T) -> position_embedding_table -> (256, 384)
+            Each position (0-255) is mapped to a 384-dimensional embedding
             Shape: (sequence_length, embedding_dim)
 
         Combined Embeddings:
-            x = tok_emb + pos_emb -> (32, 8, 32)
+            x = tok_emb + pos_emb -> (64, 256, 384)
             Position embeddings are broadcasted and added to token embeddings
             Each token now has both "what it is" and "where it is" information
 
-        Transformer Block(x3):
+        Transformer Block(x6):
             Each block has:
 
             #LayerNorm
@@ -116,7 +113,7 @@ class LanguageModel(nn.Module):
             a) Multi-Head Self-Attention
                 • Queries, Keys, Values computed from x
                 • Causal mask prevents attending to future tokens
-                • 4 attention heads run in parallel
+                • 6 attention heads run in parallel
                     Linear(n_embd → n_embd)
                     Dropout
 
@@ -137,16 +134,16 @@ class LanguageModel(nn.Module):
         #LayerNorm
 
         Language Model Head:
-            (32, 8, 32) -> lm_head -> (32, 8, 65)
+            (64, 256, 384) -> lm_head -> (64, 256, 65)
             Projects each token embedding to vocabulary size (65 logits per token)
             Shape: (batch_size, sequence_length, vocab_size)
 
         Summary:
-            (32, 8) --token_emb--> (32, 8, 32)
-                    --pos_emb----> (8, 32)
-                    --token_emb+pos_emb----> (32, 8, 32)
-                    --Transformer Block(x3)----> (32, 8, 32)
-                    --lm_head-----> (32, 8, 65)
+            (64, 256) --token_emb--> (64, 256, 384)
+                    --pos_emb----> (256, 384)
+                    --token_emb+pos_emb----> (64, 256, 384)
+                    --Transformer Block(x6)----> (64, 256, 384)
+                    --lm_head-----> (64, 256, 65)
         """
 
         B,T = idx.shape
@@ -183,17 +180,21 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 print("Using device:", device)
 
 
-checkpoint = torch.load("models/Transformer/transformer.pth",map_location=device)
+# HYPERPARAMETERS
+checkpoint = torch.load("models/Transformer/transformer.pth", map_location=device)
 vocab_size = checkpoint["vocab_size"]
 block_size = checkpoint["block_size"]
-dropout = checkpoint["dropout"]
+n_head = checkpoint["n_head"]
+n_layer = checkpoint["n_layer"]
 n_embd = checkpoint["n_embd"]
+dropout = checkpoint["dropout"]
 stoi = checkpoint["stoi"]
 itos = checkpoint["itos"]
 
 
 m = LanguageModel()
 m.load_state_dict(checkpoint["model_state_dict"])
+m.to(device)
 m.eval()
 
 
@@ -201,6 +202,9 @@ encode = lambda s: [stoi[c] for c in s]
 decode = lambda l: ''.join([itos[i] for i in l])
 
 
+# PARAMS
+print("Model Parameters:",sum(p.numel() for p in m.parameters()))
+
 # GENERATE
-idx = torch.zeros((1,1), dtype=torch.long) # just a tensor having a single "0" to start the generation
-print(decode(m.generate(idx,max_new_tokens=3000)[0].tolist()))
+idx = torch.zeros((1,1), dtype=torch.long, device=device) # just a tensor having a single "0" to start the generation
+print(decode(m.generate(idx,max_new_tokens=1000)[0].tolist()))
