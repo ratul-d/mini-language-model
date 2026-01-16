@@ -152,6 +152,7 @@ class LanguageModel(nn.Module):
         pos_embd = self.position_embedding_table(torch.arange(T, device=idx.device)) # output.shape --> (T,n_embd)
         x = tok_embd + pos_embd # output.shape --> (B,T,n_embd)
         x = self.blocks(x) # output.shape --> (B,T,n_embd)
+        x = self.ln_f(x)
         logits = self.lm_head(x) # output.shape --> (B,T,vocab_size)
 
         if targets is None:
