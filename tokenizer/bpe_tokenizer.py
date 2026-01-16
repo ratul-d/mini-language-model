@@ -68,18 +68,11 @@ class BPETokenizer:
     # ENCODE-DECODE FUNCTIONS
     def encode(self, text):
         tokens = list(text.encode("utf-8"))  # tokens before Byte-Pair-Encoding
-        while True:
-            stats = self._get_stats(tokens)  # count pairs
-            if not stats:
-                break
 
-            # select the pair whose merge rule was learned earliest (lowest merge id)
-            pair = min(stats, key=lambda p: self.merges.get(p, float("inf")))
-            if pair not in self.merges:
-                break
+        # apply merges in training order
+        for pair, idx in self.merges.items():
+            tokens = self._merge(tokens, pair, idx)
 
-            idx = self.merges[pair]  # get idx for pair from merges-dict
-            tokens = self._merge(tokens, pair, idx)  # merge
         return tokens
 
     def decode(self, ids):
