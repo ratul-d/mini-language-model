@@ -8,4 +8,4 @@ vocab_size=300
 tok = BPETokenizer(vocab_size)
 tok.train(text,verbose=True)
 
-tok.save("models/Transformer/BPE-Transformer/shakespeare_tokenizer.pkl")
+tok.save("models/BPE-Transformer/shakespeare_tokenizer.pkl")

@@ -35,7 +35,7 @@ The model predicts the next character given a fixed-length context in a left-to-
 The model is **already trained**. To test text generation, simply run:
 
 ```bash
-python models/Transformer/transformer-generate.py
+python models/Char-Transformer/transformer-generate.py
 ```
 
 This will load the pretrained checkpoint and generate Shakespeare-like text directly in the terminal.
