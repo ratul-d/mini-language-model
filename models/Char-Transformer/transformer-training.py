@@ -40,8 +40,8 @@ def get_batch(split):
 """
 get_batch USAGE:
     xb,yb = get_batch("train")
-    xb.shape --> [32,8] 32 separate occasions/batches of 8 continuous characters
-    yb.shape --> [32,8] predicted next character for each character in previous matrix
+    xb.shape --> [64,256] one batch of 64 sequences, each 256 characters long
+    yb.shape --> [64,256] predicted next character for each character in previous matrix
 """
 
 
@@ -140,11 +140,11 @@ class LanguageModel(nn.Module):
         What is happening in this forward pass:
 
         Assume Input (idx): (batch_size, block_size) -> (64, 256)
-            64 batches, each with 256 token indices
+            64 sequences(samples), each of length 256
 
         Token Embedding:
             idx -> token_embedding_table -> (64, 256, 384)
-            Each token index is mapped to a 32-dimensional embedding
+            Each token index is mapped to a 384-dimensional embedding
             Shape: (batch_size, sequence_length, embedding_dim)
 
         Position Embedding:
@@ -166,7 +166,8 @@ class LanguageModel(nn.Module):
                 • Queries, Keys, Values computed from x
                 • Causal mask prevents attending to future tokens
                 • 6 attention heads run in parallel
-                    Linear(n_embd → n_embd)
+                    Each head: Linear(n_embd → head_size)
+                    Concatenation → Linear(n_embd → n_embd)
                     Dropout
 
             b) Residual connection
@@ -233,7 +234,7 @@ class LanguageModel(nn.Module):
 m = LanguageModel().to(device)
 """
 logits, loss = m(xb, yb)
-print(logits.shape) --> torch.Size([256, 65])
+print(logits.shape) --> torch.Size([64, 256, 65])
 """
 
 
